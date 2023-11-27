@@ -1,0 +1,869 @@
+---
+title: "Microbiome_postmating_analysis"
+output:
+  html_document: default
+  pdf_document: default
+date: "2023-05-30"
+---
+
+##### Load required libraries 
+Libraries needed to import data, filter and reformat data frames and for high quality graphics.
+```{r 1}
+
+library("phyloseq")
+library("dplyr")
+library("ggplot2")
+library("tibble")
+library("gridExtra")
+source("https://raw.githubusercontent.com/mahendra-mariadassou/phyloseq-extended/master/load-extra-functions.R")
+library("DESeq2")
+library("GO.db")
+library("impute")
+library("preprocessCore")
+library("adespatial")
+library("remotes")
+library("microbiomeSeq")
+
+```
+
+
+##### Read the data and create phyloseq objects
+Three tables are needed:
+1)OTU
+2)Taxonomy
+3)Samples
+```{r 2}
+otubio = read.csv("/Users/gagneet/Desktop/microbiome/run2/taxanomy/biom_timepoints.csv",header=TRUE)
+head(otubio)
+taxan = read.csv("/Users/gagneet/Desktop/microbiome/run2/taxanomy/taxonomy.csv",header=TRUE)
+head(taxan)
+metadata = read.csv("/Users/gagneet/Desktop/microbiome/run2/taxanomy/metadata_timepoints.csv",header=TRUE)
+print(metadata)
+
+metadataT <-  c("0min", "2min", "6hr", "12hr", "24hr")
+xf <- factor(metadataT, levels = c("0min", "2min", "6hr", "12hr", "24hr"))
+print(xf)
+#tree = read_tree("/Users/gagneet/Desktop/microbiome/taxanomy/tree.nwk")
+```
+##### Define the row names from the otu coloumn and tranform into matrixes 
+(otu and taxanomy tables)
+```{r 3}
+otubio<- otubio %>%
+    tibble::column_to_rownames("otu") 
+ 
+  taxan <- taxan %>% 
+    tibble::column_to_rownames("otu")
+
+  metadata <- metadata %>% 
+    tibble::column_to_rownames("sample")
+  
+  otubio <- as.matrix(otubio)
+taxan <- as.matrix(taxan)
+```
+
+##### Transform and Combine data to phyloseq object
+otu_table() is a phyloseq function which extract the OTU table from the phyloseq object.
+```{r 4}
+OTU = otu_table(otubio, taxa_are_rows = TRUE)
+  TAX = phyloseq::tax_table(taxan)
+  Samples = sample_data(metadata)
+  
+physeq_pm <- phyloseq(OTU, TAX, Samples, tree)
+ physeq_pm
+
+```
+
+
+
+##### Normalize number of reads in each sample using median sequencing depth.
+The reasons to filter data is to avoid spending much time analyzing taxa that were seen only rarely among samples and also useful to filter the noise.
+```{r 5}
+total = median(sample_sums(physeq_pm))
+#standf = function(x, t=total) round(t * (x / sum(x)))
+standf = function(x) {return(x / sum(x)) } #count proportion
+  physeq_pm_nor = transform_sample_counts(physeq_pm, standf)
+
+ library_size(physeq_pm_nor)
+  
+  phyloseq::sample_sums(physeq_pm_nor)
+  
+ taxa_proportions(physeq_pm_nor, 'Phylum', treatment = NULL)
+
+  a_taxa <- abundance_heatmap(physeq_pm_nor, classification = 'Phylum',
+  treatment = "Time", transformation = 'log2') + theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1, size = 7)) +theme(axis.title.y = element_text(size=8))
+  
+
+  a_taxa$data$Time = factor(a_taxa$data$Time,levels = c("0min", "2min", "6hr", "12hr", "24hr"))
+   print(a_taxa)
+    
+taxa_proportions(physeq_pm_nor, 'Class', treatment = NULL)
+
+  abundance_heatmap(physeq_pm_nor, classification = 'Class',
+  treatment = "Time", transformation = 'log2')
+```
+
+```{r 6}
+ 
+ps.rel_pm = transform_sample_counts(physeq_pm_nor, function(x) x/sum(x)*100)
+# agglomerate taxa
+glom_pm <- tax_glom(ps.rel_pm, taxrank = 'Phylum', NArm = FALSE)
+ps.melt_pm <- psmelt(glom_pm)
+# change to character for easy-adjusted level
+ps.melt_pm$Phylum <- as.character(ps.melt_pm$Phylum)
+
+ps.melt_pm <- ps.melt_pm %>%
+  group_by(Time, Phylum) %>%
+  mutate(median=median(Abundance))
+# select group median > 1
+keep_pm <- unique(ps.melt_pm$Phylum[ps.melt_pm$median > 1])
+ps.melt_pm$Phylum[!(ps.melt_pm$Phylum %in% keep_pm)] <- "< 1%"
+#to get the same rows together
+ps.melt_sum_pm <- ps.melt_pm %>%
+  group_by(Sample,Time,Phylum) %>%
+  summarise(Abundance=sum(Abundance))
+
+ab_t <- ggplot(ps.melt_sum_pm, aes(x = Sample, y = Abundance, fill = Phylum)) + 
+  geom_bar(stat = "identity", aes(fill=Phylum)) + 
+  labs(x="", y="Relative abundance [%]") +
+  facet_wrap(~Time, scales= "free_x", nrow=1) +
+  theme_classic() + 
+  theme(strip.background = element_blank(), 
+        axis.text.x.bottom = element_text(angle = -90))
+
+
+ab_t$data$Time = factor(ab_t$data$Time,levels = c("0min", "2min", "6hr", "12hr", "24hr"))
+   print(ab_t)
+abundance_lines(physeq_pm_nor, classification = 'Phylum', 
+  treatment = "Time",  
+  relative_abundance = TRUE)
+
+
+```
+
+``` {r 563}
+ps.rel_pm = transform_sample_counts(physeq_pm_nor, function(x) x/sum(x)*100)
+# agglomerate taxa
+glom_pm <- tax_glom(ps.rel_pm, taxrank = 'Genus', NArm = FALSE)
+ps.melt_pm <- psmelt(glom_pm)
+# change to character for easy-adjusted level
+ps.melt_pm$Genus <- as.character(ps.melt_pm$Genus)
+
+ps.melt_pm <- ps.melt_pm %>%
+  group_by(Time, Genus) %>%
+  mutate(median=median(Abundance))
+# select group mean > 1
+keep_pm <- unique(ps.melt_pm$Genus[ps.melt_pm$median > 2.5])
+ps.melt_pm$Genus[!(ps.melt_pm$Genus %in% keep_pm)] <- "< 2.5%"
+#to get the same rows together
+ps.melt_sum_pm <- ps.melt_pm %>%
+  group_by(Sample,Time,Genus) %>%
+  summarise(Abundance=sum(Abundance))
+
+ab_g <- ggplot(ps.melt_sum_pm, aes(x = Sample, y = Abundance, fill = Genus)) + 
+  geom_bar(stat = "identity", aes(fill=Genus)) + 
+  labs(x="", y="Relative abundance [%]") +
+  facet_wrap(~Time, scales= "free_x", nrow=1) +
+  theme_classic() + 
+  theme(legend.position = "right", 
+        strip.background = element_blank(), 
+        axis.text.x.bottom = element_text(angle = -90))
+
+ab_g$data$Time = factor(ab_g$data$Time,levels = c("0min", "2min", "6hr", "12hr", "24hr"))
+   print(ab_g)
+## < 2.5% indicates the rare taxa in each group, with median relative abundance < 2.5%.
+
+
+
+
+```
+
+```{r 6}
+ps.rel_pm = transform_sample_counts(physeq_pm_nor, function(x) x/sum(x)*100)
+# agglomerate taxa
+glom_pm <- tax_glom(ps.rel_pm, taxrank = 'Class', NArm = FALSE)
+ps.melt_pm <- psmelt(glom_pm)
+# change to character for easy-adjusted level
+ps.melt_pm$Class <- as.character(ps.melt_pm$Class)
+
+ps.melt_pm <- ps.melt_pm %>%
+  group_by(Time, Class) %>%
+  mutate(median=median(Abundance))
+# select group mean > 1
+keep_pm <- unique(ps.melt_pm$Class[ps.melt_pm$median > 1.5])
+ps.melt_pm$Class[!(ps.melt_pm$Class %in% keep_pm)] <- "< 1.5%"
+#to get the same rows together
+ps.melt_sum_pm <- ps.melt_pm %>%
+  group_by(Sample,Time,Class) %>%
+  summarise(Abundance=sum(Abundance))
+
+ab_c <- ggplot(ps.melt_sum_pm, aes(x = Sample, y = Abundance, fill = Class)) + 
+  geom_bar(stat = "identity", aes(fill=Class)) + 
+  labs(x="", y="Relative abundance [%]") +
+  facet_wrap(~Time, scales= "free_x", nrow=1) +
+  theme_classic() + 
+  theme(legend.position = "right", 
+        strip.background = element_blank(), 
+        axis.text.x.bottom = element_text(angle = -90))
+ab_c$data$Time = factor(ab_c$data$Time,levels = c("0min", "2min", "6hr", "12hr", "24hr"))
+   print(ab_c)
+
+## < 2.5% indicates the rare taxa in each group, with median relative abundance < 2.5%.
+```
+``` {r 534}
+
+
+
+```
+
+
+ ##### Alpha Diversity Analysis:
+This method is used to measure the diversity present within a sample or community.Alpha diversity can be characterized via the total number of species (richness), the abundances of the species (evenness) or measures that considered both richness and evenness. We can choose from richness based measure such as Observed index which calculates the actual number of unique taxa observed in each sample.  
+While the Chao1 measures the richness by inferring out the number of rare organisms that may have lost due to undersampling.Also,there are indices such as Shannon, Simpson and Fisher in which along with the number (richness), the abundance of organisms (evenness) is also measured to describe the actual diversity of a community.
+
+##### Alpha-diversity measure using Chao1 at OTU level all the samples.
+ The samples(Drosphila species) are represented on X-axis and their estimated diversity on Y-axis.
+```{r 13}
+
+physeq_rarefy_pm <- rarefy_even_depth(physeq_pm, rngseed=1, sample.size=min(sample_sums(physeq_pm)), replace=F)
+
+ plot_richness(physeq_rarefy_pm, measures=c("Chao1"),"sample", color="Time") 
+#Chao Method
+
+
+```
+
+##### Alpha-diversity measure using Shannon 
+Also,there are indices such as Shannon, Simpson and Fisher in which along with the number (richness), the abundance of organisms (evenness) is also measured to describe the actual diversity of a community.Here we measure the Alpha-diversity using Shannon at OTU level across all the samples. We made a boxplot of the number of OTUs and the Shannon entropy grouping the different samples by Mating Factor. 
+```{r 14}
+
+#alpha_meas = c("Observed", "Chao1", "ACE", "Shannon", "Simpson", "InvSimpson")
+#(p <- plot_richness(physeq_rarefy_pm, "Time", "Tissue", measures=alpha_meas))
+
+ab_p <- plot_richness(physeq_rarefy_pm, x="Time", measures=c("Shannon", "Simpson" ), color="Time") +
+   theme(aspect.ratio=1.5, panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line  = element_line(colour = "black", size=0.1),panel.border = element_rect(colour = "black", fill=NA, size=1.0)) +
+
+geom_boxplot()
+
+ab_p$data$Time = factor(ab_p$data$Time,levels = c("0min", "2min", "6hr", "12hr", "24hr"))
+   print(ab_p)
+plot_richness(physeq_rarefy_pm, x="Time", measures=c( "Shannon"), color="Tissue") + geom_boxplot()
+```
+``` {r 398}
+alpha.diversity_pm <- estimate_richness(physeq_rarefy_pm, measures = c("Observed", "Chao1","Shannon","Simpson","InvSimpson"))
+DataAlphaDiversity_pm <- cbind(sample_data(physeq_rarefy_pm), alpha.diversity_pm)
+
+anova.res_pm <- aov(Shannon ~Time, data = DataAlphaDiversity_pm)
+print(summary(anova.res_pm))
+#print (DataAlphaDiversity)
+
+
+library(dplyr)
+
+# Sample data frame
+df <- data.frame(
+  Group = c("A", "A", "B", "B", "C"),
+  Value = c(10, 20, 30, 40, 50)
+)
+
+# Generate pairwise combinations between groups
+combinations_pm <- combn(unique(DataAlphaDiversity_pm$Time), 2, simplify = FALSE)
+
+# Apply Wilcoxon test to each pairwise combination
+result_pm <- lapply(combinations_pm, function(comb) {
+  group1 <- DataAlphaDiversity_pm %>% filter(Time == comb[1]) %>% pull(Shannon)
+  group2 <- DataAlphaDiversity_pm %>% filter(Time == comb[2]) %>% pull(Shannon)
+  wilcox.test(group1, group2)
+})
+
+# Combine the results into a data frame
+result_df_pm <- data.frame(
+  Combination_pm = sapply(combinations_pm, paste, collapse = " vs. "),
+  p.value = sapply(result_pm, function(x) x$p.value)
+)
+
+result_df_pm$stars <- ifelse(result_df_pm$p.value < 0.001, "***",
+                          ifelse(result_df_pm$p.value < 0.01, "**",
+                                 ifelse(result_df_pm$p.value < 0.05, "*", "")))
+
+# Output the updated result data frame
+print(result_df_pm)
+
+
+```
+
+
+``` {r 456}
+alpha.diversity_pm <- estimate_richness(physeq_rarefy_pm, measures = c("Observed", "Chao1","Shannon","Simpson","InvSimpson"))
+DataAlphaDiversity_pm <- cbind(sample_data(physeq_rarefy_pm), alpha.diversity_pm)
+
+anova.res_pm <- aov(Chao1 ~Treatment, data = DataAlphaDiversity_pm)
+print(summary(anova.res_pm))
+#print (DataAlphaDiversity)
+
+
+library(dplyr)
+
+# Sample data frame
+df <- data.frame(
+  Group = c("A", "A", "B", "B", "C"),
+  Value = c(10, 20, 30, 40, 50)
+)
+
+# Generate pairwise combinations between groups
+combinations_pm <- combn(unique(DataAlphaDiversity_pm$Treatment), 2, simplify = FALSE)
+
+# Apply Wilcoxon test to each pairwise combination
+result_pm <- lapply(combinations_pm, function(comb) {
+  group1 <- DataAlphaDiversity_pm %>% filter(Treatment == comb[1]) %>% pull(Chao1)
+  group2 <- DataAlphaDiversity_pm %>% filter(Treatment == comb[2]) %>% pull(Chao1)
+  wilcox.test(group1, group2)
+})
+
+# Combine the results into a data frame
+result_df_pm <- data.frame(
+  Combination_pm = sapply(combinations_pm, paste, collapse = " vs. "),
+  p.value = sapply(result_pm, function(x) x$p.value)
+)
+
+result_df_pm$stars <- ifelse(result_df_pm$p.value < 0.001, "***",
+                          ifelse(result_df_pm$p.value < 0.01, "**",
+                                 ifelse(result_df_pm$p.value < 0.05, "*", "")))
+
+# Output the updated result data frame
+print(result_df_pm)
+
+
+
+
+```
+
+  ##### Beta-diversity Analysis measure using Jaccard distance.
+This method provides a way to compare the diversity or composition between samples or microbial communities. These methods compare the changes in the presence/absence or abundance of thousands of taxa present in a dataset and summarize these into how ’similar’ or ’dissimilar’ are those samples.Each sample gets compared to every other sample generating a distance or dissimilarity matrix. Two parameters need to be considered when performing beta diversity analysis. The first one is how similarity or distance between sample is measured which includes non-phylogenetic (Jaccard index) and phylogenetic-based (weighted and unweighted UniFrac) distances.The other parameter is how to visualize such dissimilarity matrix in lower dimensions. Here we have used the Ordination-based method, Principle Coordinate Analysis (PCoA) to visualize these matrix where each point represents the entire microbiome of a single sample. 
+
+```{r 15}
+
+
+dist.bray_pm <-phyloseq::distance(physeq_rarefy_pm, method ="bray", weighted=FALSE)
+
+
+ordination_pm = ordinate(physeq_rarefy_pm, method="PCoA", distance=dist.bray_pm)
+ab_bd <- plot_ordination(physeq_rarefy_pm, ordination_pm, color="Time", shape="Tissue") +
+   theme(aspect.ratio=1, panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"))
+ plot_ordination+
+  geom_text(aes(label = Sex), size = 4)
+ab_bd$data$Time = factor(ab_bd$data$Time,levels = c("0min", "2min", "6hr", "12hr", "24hr"))
+   print(ab_bd)
+
+
+dist.bray_pm <-phyloseq::distance(physeq_rarefy_pm, method ="bray", weighted=FALSE)
+
+
+ordination_pm = ordinate(physeq_rarefy_pm, method="PCoA", distance=dist.bray_pm)
+plot_ordination(physeq_rarefy_pm, ordination_pm, color="Treatment", shape="Tissue") + theme(aspect.ratio=1, panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+panel.background = element_blank(), axis.line = element_line(colour = "black"))
+ plot_ordination+
+  geom_text(aes(label = Sex), size = 4)
+
+
+
+
+
+
+geom_boxplot()
+
+```
+
+
+``` {r 4567}
+
+
+
+
+#metadata_pm <- as(sample_data(physeq_rarefy_pm), "data.frame")
+#adonis2(dist.bray_pm ~ Time, data = metadata_pm, perm = 9999)
+
+#pairwise.adonis(dist.bray_pm, data = metadata_pm$Time, p.adjust.m ="none")
+
+
+#metadata_pm <- as(sample_data(physeq_rarefy_pm), "data.frame")
+#Adonis2(dist.bray_pm ~ Treatment, data = metadata_pm, perm = 9999)
+
+
+a_pm <- adonis2(dist.bray_pm~sample_data(physeq_rarefy_pm)$Time)
+#print(a)
+
+b_pm <- adonis2(dist.bray_pm~sample_data(physeq_rarefy_pm)$Treatment)
+print(b)
+#sample_data(physeq_rarefy)$species
+
+#print(dist.bray)
+library ("pairwiseAdonis")
+
+   
+
+a_pm <- pairwise.adonis(dist.bray_pm,sample_data(physeq_rarefy_pm)$Time, p.adjust.m ="none")
+#a_pm$pairs = factor(a_pm$pairs,levels = c("2min vs 0min", "6hr vs 0hr","12hr vs 0min", "0min vs 24hr","2min vs 6hr", "2min vs 12hr", "2min vs 24hr", "6hr vs 12hr", "6hr vs 24hr", "12hr vs 24hr" ))
+
+# Output the updated result data frame
+print(a_pm)
+View(a_pm)
+str(a_pm)
+write.table(as.data.frame(a_pm), file = "a_pm.xlsx", sep = "\t")
+
+
+
+write.table(as.data.frame(a_pm), file = "result_df.xlsx", sep = "\t")
+
+a_pm <- pairwise.adonis(dist.bray_pm,sample_data(physeq_rarefy_pm)$Treatment, p.adjust.m ="none")
+print(a_pm)
+```
+
+
+##### Network Analysis
+Here we performed simple Network analysis using Species as an Experimental factor
+```{r 16}
+#plot_net(physeq_rarefy_pm, "bray", color = "Time")
+
+ig <- make_network(physeq_rarefy_pm, max.dist=0.8)
+plot_network(ig, physeq_rarefy_pm, color="Time",shape="Tissue", line_weight=0.4, label=NULL)
+
+ig <- make_network(physeq_rarefy_pm, dist.fun="bray", max.dist=0.8)
+plot_network(ig, physeq_rarefy_pm, color="Time",,shape="Tissue", line_weight=0.4, label=NULL)
+
+
+
+
+ig <- make_network(physeq_rarefy_pm, max.dist=0.8)
+plot_network(ig, physeq_rarefy_pm, color="Treatment",shape="Tissue", line_weight=0.4, label=NULL)
+
+ig <- make_network(physeq_rarefy_pm, dist.fun="bray", max.dist=0.8)
+plot_network(ig, physeq_rarefy_pm, color="Treatment",,shape="Tissue", line_weight=0.4, label=NULL)
+
+```
+##### Network Analysis
+Here we performed simple Network analysis using Species as an Experimental factor
+```{r 16}
+
+dendrogram_phyloseq(physeq_rarefy_pm, treatment = "Time", method = 'bray',
+  colors = 'default')
+
+
+dendrogram_phyloseq(physeq_rarefy_pm, treatment = "Treatment", method = 'bray',
+  colors = 'default')
+
+
+pcoa_phyloseq(physeq_rarefy_pm, "Time", circle = FALSE)
+
+
+
+tsne_phyloseq(physeq_rarefy_pm, treatment = "Time", perplexity = 5,
+  circle = FALSE)
+```
+
+##### Simple Network analysis using major OTUs.
+```{r 17}
+# plot_net(physeq_abund, distance = "(A+B-2*J)/(A+B)", type = "taxa", 
+           #maxdist = 0.6, color="Phylum", point_label="Class") 
+```
+
+```{r 18}
+library(MicrobiotaProcess)
+library(patchwork)
+
+# Methods: “total”, “max”, “frequency”, “normalize”, “range”, “rank”, “rrank”, “standardize”, “pa”, “chi.square”, “hellinger”, “log”, “clr”, “rclr”, “alr”
+# If the input was normalized, the method parameter should be setted NULL.
+
+ pcares_pm <- get_pca(physeq_rarefy_pm, method="total")
+# Visulizing the result
+abc <- ggordpoint(obj=pcares_pm, biplot=TRUE, speciesannot=FALSE,
+                      factorNames=c("Time"), ellipse=TRUE) +
+            scale_color_manual(values=c("#D63838", "#ABAD23", "#1E9820" , "#43B6D9", "#CD43D9")) +
+            scale_fill_manual(values=c("#D63838", "#ABAD23", "#1E9820" , "#43B6D9", "#CD43D9"))
+# pc = c(1, 3) to show the first and third principal components.
+pcaplot2_pm <- ggordpoint(obj=pcares_pm, pc=c(1, 3), biplot=TRUE, speciesannot=FALSE,
+                       factorNames=c("Time"), ellipse=TRUE) +
+            scale_color_manual(values=c("#D63838", "#ABAD23", "#1E9820" , "#43B6D9", "#CD43D9")) +
+            scale_fill_manual(values=c("#D63838", "#ABAD23", "#1E9820" , "#43B6D9", "#CD43D9"))
+
+
+
+
+abc$data$Time = factor(abc$data$Time,levels = c("0min", "2min", "6hr", "12hr", "24hr"))
+   print(abc)
+
+
+
+pcares_pm <- get_pca(physeq_rarefy_pm, method="total")
+# Visulizing the result
+pcaplot1_pm <- ggordpoint(obj=pcares_pm, biplot=TRUE, speciesannot=FALSE,
+                      factorNames=c("Treatment"), ellipse=TRUE) +
+            scale_color_manual(values=c("#D63838", "#ABAD23", "#1E9820" , "#43B6D9", "#CD43D9")) +
+            scale_fill_manual(values=c("#D63838", "#ABAD23", "#1E9820" , "#43B6D9", "#CD43D9"))
+# pc = c(1, 3) to show the first and third principal components.
+pcaplot2_pm <- ggordpoint(obj=pcares_pm, pc=c(1, 3), biplot=TRUE, speciesannot=FALSE,
+                       factorNames=c("Treatment"), ellipse=TRUE) +
+            scale_color_manual(values=c("#D63838", "#ABAD23", "#1E9820" , "#43B6D9", "#CD43D9")) +
+            scale_fill_manual(values=c("#D63838", "#ABAD23", "#1E9820" , "#43B6D9", "#CD43D9"))
+
+
+
+
+pcaplot1_pm #| pcaplot2_pm
+```
+
+```{r 19}
+# distmethod
+# "unifrac",  "wunifrac", "manhattan", "euclidean", "canberra", "bray", "kulczynski" ...(vegdist, dist)
+pcoares_pm <- get_pcoa(physeq_rarefy_pm, distmethod="bray", method="total")
+# Visualizing the result
+pcoaplot1_pm <- ggordpoint(obj=pcoares_pm, biplot=TRUE, speciesannot=FALSE,
+                       factorNames=c("Time"), ellipse=TRUE) +
+            scale_color_manual(values=c("#D63838", "#ABAD23", "#1E9820" , "#43B6D9", "#CD43D9")) +
+            scale_fill_manual(values=c("#D63838", "#ABAD23", "#1E9820" , "#43B6D9", "#CD43D9"))
+# first and third principal co-ordinates
+pcoaplot2_pm <- ggordpoint(obj=pcoares_pm, pc=c(1, 3), biplot=TRUE, speciesannot=FALSE,
+                        factorNames=c("Time"), ellipse=TRUE) +
+             scale_color_manual(values=c("#D63838", "#ABAD23", "#1E9820" , "#43B6D9", "#CD43D9")) +
+             scale_fill_manual(values=c("#D63838", "#ABAD23", "#1E9820" , "#43B6D9", "#CD43D9"))
+pcoaplot1_pm #| pcoaplot2_pm
+
+
+
+
+
+# Visualizing the result
+pcoaplot1_pm <- ggordpoint(obj=pcoares_pm, biplot=TRUE, speciesannot=FALSE,
+                       factorNames=c("Treatment"), ellipse=TRUE) +
+            scale_color_manual(values=c("#D63838",  "#43B6D9", "#CD43D9")) +
+            scale_fill_manual(values=c("#D63838", "#43B6D9", "#CD43D9"))
+# first and third principal co-ordinates
+pcoaplot2_pm <- ggordpoint(obj=pcoares_pm, pc=c(1, 3), biplot=TRUE, speciesannot=FALSE,
+                        factorNames=c("Treatment"), ellipse=TRUE) +
+             scale_color_manual(values=c("#D63838",  "#43B6D9", "#CD43D9")) +
+             scale_fill_manual(values=c("#D63838", "#43B6D9", "#CD43D9"))
+pcoaplot1_pm #| pcoaplot2_pm
+```
+
+
+```{r 20}
+library(ggplot2)
+library(MicrobiotaProcess)
+library(ggtree)
+hcsample_pm <- get_clust(physeq_rarefy_pm, distmethod="bray",
+                      method="hellinger", hclustmethod="average")
+# rectangular layout
+cplot1_pm <- ggclust(obj=hcsample_pm,
+                  layout = "rectangular",
+                  pointsize=1,
+                  fontsize=0,
+                  factorNames=c("Time")
+              ) +
+              scale_color_manual(values=c("#D63838", "#ABAD23", "#1E9820" , "#43B6D9", "#CD43D9")) +
+              theme_tree2(legend.position="right",
+              plot.title = element_text(face="bold", lineheight=25,hjust=0.5))
+# circular layout
+cplot2_pm <- ggclust(obj=hcsample_pm,
+                  layout = "circular",
+                  pointsize=1,
+                  fontsize=2,
+                  factorNames=c("Time")
+          ) +
+          scale_color_manual(values=c("#D63838", "#ABAD23", "#1E9820" , "#43B6D9", "#CD43D9")) +
+          theme(legend.position="right")
+cplot1_pm | cplot2_pm
+
+
+
+
+# rectangular layout
+cplot1_pm <- ggclust(obj=hcsample_pm,
+                  layout = "rectangular",
+                  pointsize=1,
+                  fontsize=0,
+                  factorNames=c("Treatment")
+              ) +
+              scale_color_manual(values=c("#D63838", "#ABAD23")) +
+              theme_tree2(legend.position="right",
+              plot.title = element_text(face="bold", lineheight=25,hjust=0.5))
+# circular layout
+cplot2_pm <- ggclust(obj=hcsample_pm,
+                  layout = "circular",
+                  pointsize=1,
+                  fontsize=2,
+                  factorNames=c("Treatment")
+          ) +
+          scale_color_manual(values=c("#D63838", "#ABAD23")) +
+          theme(legend.position="right")
+cplot1_pm | cplot2_pm
+
+
+
+```
+
+```{r 21}
+# for the kruskal_test and wilcox_test
+library(coin)
+library(MicrobiotaProcess)
+# Since the effect size was calculated by randomly re-sampling, 
+# the seed should be set for reproducibly results.
+set.seed(1000)
+deres_pm <- diff_analysis(physeq_rarefy_pm, classgroup = "Treatment",
+                       mlfun = "lda",
+                       filtermod = "pvalue",
+                       firstcomfun = "kruskal_test",
+                       firstalpha = 0.05,
+                       strictmod = TRUE,
+                       secondcomfun = "wilcox_test",
+                       subclmin = 3,
+                       subclwilc = TRUE,
+                       secondalpha = 0.03,
+                       lda=3)
+deres_pm
+```
+
+
+``` {r 4532}
+
+
+set.seed(1000)
+deres_pm_time <- diff_analysis(physeq_rarefy_pm, classgroup = "Time",
+                       mlfun = "lda",
+                       filtermod = "pvalue",
+                       firstcomfun = "kruskal_test",
+                       firstalpha = 0.05,
+                       strictmod = TRUE,
+                       secondcomfun = "wilcox_test",
+                       subclmin = 3,
+                       subclwilc = TRUE,
+                       secondalpha = 0.03,
+                       lda=3)
+deres_pm_time
+
+
+
+
+```
+
+``` {r 546}
+diffclade_pm <- ggdiffclade(
+                   obj=deres_pm, 
+                   alpha=0.3, 
+                   linewd=0.15,
+                   skpointsize=0.6, 
+                   layout="radial",
+                   taxlevel=3, 
+                   removeUnkown=TRUE,
+                   reduce=TRUE # This argument is to remove the branch of unknown taxonomy.
+               ) +
+               scale_fill_manual(
+                   values=c("#00AED7", "#FD9347")
+               ) +
+               guides(color = guide_legend(
+                                  keywidth = 0.1, 
+                                  keyheight = 0.6,
+                                  order = 1,
+                                  ncol=1)
+               ) +
+               theme(
+                   panel.background=element_rect(fill=NA),
+                   legend.position="right", 
+                   plot.margin=margin(0,0,0,0),
+                   legend.spacing.y=unit(0.001, "cm"), 
+                   legend.title=element_text(size=4),
+                   legend.text=element_text(size=6), 
+                   legend.box.spacing=unit(0.001,"cm")
+               )
+diffclade_pm
+
+
+
+
+
+
+diffclade_pm_time <- ggdiffclade(
+                   obj=deres_pm_time, 
+                   alpha=0.3, 
+                   linewd=0.15,
+                   skpointsize=0.6, 
+                   layout="radial",
+                   taxlevel=3, 
+                   removeUnkown=TRUE,
+                   reduce=TRUE # This argument is to remove the branch of unknown taxonomy.
+               ) +
+               scale_fill_manual(
+                   values=c("#D63838", "#ABAD23", "#1E9820" , "#43B6D9", "#CD43D9")
+               ) +
+               guides(color = guide_legend(
+                                  keywidth = 0.1, 
+                                  keyheight = 0.6,
+                                  order = 1,
+                                  ncol=1)
+               ) +
+               theme(
+                   panel.background=element_rect(fill=NA),
+                   legend.position="right", 
+                   plot.margin=margin(0,0,0,0),
+                   legend.spacing.y=unit(0.001, "cm"), 
+                   legend.title=element_text(size=4),
+                   legend.text=element_text(size=6), 
+                   legend.box.spacing=unit(0.001,"cm")
+               )
+diffclade_pm_time
+
+
+```
+
+``` {r 22}
+diffbox_pm <- ggdiffbox(obj=deres_pm, box_notch=FALSE, 
+             colorlist=c("#00AED7", "#FD9347"), xlabtext="Treatment")
+diffbox_pm
+
+
+
+diffbox_pm_time <- ggdiffbox(obj=deres_pm_time, box_notch=FALSE, 
+             colorlist=c("#D63838", "#ABAD23", "#1E9820" , "#43B6D9", "#CD43D9"), xlabtext="Time")
+diffbox_pm_time
+```
+
+``` {r 23}
+ggdifftaxbar(obj=deres_pm, xtextsize=0.5, ytextsize=0.5,
+             output="IBD_biomarkder_barplot",
+             coloslist=c("#00AED7", "#FD9347"))
+
+es_pm <- ggeffectsize(obj=deres_pm, 
+                     lineheight=0.1,
+                     linewidth=0.3) + 
+        scale_color_manual(values=c("#00AED7", "#FD9347")) 
+
+es_pm
+
+
+
+
+
+ggdifftaxbar(obj=deres_pm_time, xtextsize=0.5, ytextsize=0.5,
+             output="IBD_biomarkder_barplot",
+             coloslist=c("#D63838", "#ABAD23", "#1E9820" , "#43B6D9", "#CD43D9"))
+
+es_pm_time <- ggeffectsize(obj=deres_pm_time, 
+                     lineheight=0.1,
+                     linewidth=0.3) + 
+        scale_color_manual(values=c("#D63838", "#ABAD23", "#1E9820" , "#43B6D9", "#CD43D9")) 
+
+es_pm_time
+
+```
+## Venn or Upset plot
+
+The Venn or UpSet plot can help us to obtain the difference between groups in overview. MicrobiotaProcess provides features to obtain the input of VennDiagram or UpSet package.
+``` {r 46}
+
+library(VennDiagram)
+library(UpSetR)
+library(grid)
+library(MicrobiotaProcess)
+vennlist_pm <- get_vennlist(physeq_rarefy_pm, factorNames="Treatment")
+upsetda_pm <- get_upset(physeq_rarefy_pm, factorNames="Treatment")
+
+vennp_pm <- venn.diagram(vennlist_pm,
+                      height=5,
+                      width=5, 
+                      filename=NULL, 
+                      fill=c("#D63838", "#1E9820" ),
+                      cat.col=c("#D63838", "#1E9820" ),
+                      alpha = 0.85, 
+                      fontfamily = "serif",
+                      fontface = "bold",
+                      cex = 1.2,
+                      cat.cex = 1.3,
+                      cat.default.pos = "outer",
+                      cat.dist=0.1,
+                      margin = 0.1, 
+                      lwd = 3,
+                      lty ='dotted',
+                      imagetype = "svg")
+grid::grid.draw(vennp_pm)
+```
+
+
+``` {r 456}
+genustab_pm <- get_taxadf(physeq_rarefy_pm, taxlevel=6)
+genustab_pm <- data.frame(t(otu_table(genustab_pm)), check.names=FALSE)
+genustab_pm <- data.frame(apply(genustab_pm, 2, function(x)x/sum(x)), check.names=FALSE)
+
+cortest <- WGCNA::corAndPvalue(genustab_pm, method="spearman", alternative="two.sided")
+cortest$cor[upper.tri(cortest$cor, diag = TRUE)] <- NA
+cortest$p[upper.tri(cortest$p, diag = TRUE)] <- NA
+cortab1 <- na.omit(melt(t(cortest$cor))) %>% rename(from=Var1,to=Var2,cor=value)
+corptab1 <- na.omit(melt(t(cortest$p))) %>% rename(pvalue=value)
+cortab1$fdr <- p.adjust(corptab1$pvalue, method="fdr")
+
+cortab1 <- cortab1 %>% mutate(correlation=case_when(cor>0 ~ "positive",cor < 0 ~ "negative",TRUE ~ "No"))
+cortab2 <- cortab1 %>% filter(fdr <= 0.05) %>% filter(cor <= -0.5 | cor >= 0.8)
+
+p <- ggdiffclade(
+         obj=deres_pm_time,
+         alpha=0.3,
+         linewd=0.25,
+         skpointsize=0.2,
+         layout="inward_circular",
+         taxlevel=7,
+         cladetext=0,
+         setColors=FALSE,
+         xlim=16
+     ) +
+     scale_fill_manual(values=c("#D63838", "#ABAD23", "#1E9820" , "#43B6D9", "#CD43D9"),
+                       guide=guide_legend(keywidth=0.5,
+                                          keyheight=0.5,
+                                          order=3,
+                                          override.aes=list(alpha=1))
+     ) +
+     scale_size_continuous(range=c(1, 3),
+                       guide=guide_legend(keywidth=0.5,keyheight=0.5,order=4,
+                                          override.aes=list(shape=21))) +
+     scale_colour_manual(values=rep("white", 100),guide="none")
+
+p2 <- p +
+      
+     
+      new_scale("size") +
+      geom_tiplab(size=1, hjust=1) +
+      geom_taxalink(
+          data=cortab2,
+          mapping=aes(taxa1=from,
+                      taxa2=to,
+                      colour=correlation,
+                      size=abs(cor)),
+          alpha=0.4,
+          ncp=10,
+          hratio=1,
+          offset=1.2
+      ) +
+      scale_size_continuous(range = c(0.2, 1),
+                            guide=guide_legend(keywidth=1, keyheight=0.5,
+                                               order=1, override.aes=list(alpha=1))
+      ) +
+      scale_colour_manual(values=c("chocolate2", "#009E73"),
+                          guide=guide_legend(keywidth=0.5, keyheight=0.5,
+                          order=2, override.aes=list(alpha=1, size=1)))
+p2
+
+
+
+
+
+
+```
+
+
+
+
+``` {r 342}
+upset(upsetda_pm, sets=unique(as.vector(sample_data(physeq_pm_nor)$Treatment)), 
+      sets.bar.color = "#56B4E9",
+      order.by = "freq", 
+      empty.intersections = "on")
+
+```
